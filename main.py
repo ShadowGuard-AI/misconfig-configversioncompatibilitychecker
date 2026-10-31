@@ -109,7 +109,10 @@ def load_config(config_file: str, config_type: str) -> Dict[str, Any]:
 def is_version_compatible(config_version: str, app_version: str) -> bool:
     """
     Checks if the configuration version is compatible with the application version.
-    Simple version comparison (major.minor.patch). Extend as needed.
+    Rule (major.minor.patch): the major versions must be equal, and the
+    configuration must not be newer than the application in its minor or
+    patch component. Any older configuration within the same major
+    version is accepted, with no lower limit.
 
     Args:
         config_version (str): The version specified in the configuration file.
@@ -121,23 +124,41 @@ def is_version_compatible(config_version: str, app_version: str) -> bool:
     Raises:
         VersionIncompatibilityError: If the version is not compatible.
     """
-    try:
-        config_major, config_minor, config_patch = map(int, config_version.split("."))
-        app_major, app_minor, app_patch = map(int, app_version.split("."))
+    def parse_version(version, label):
+        if not isinstance(version, str):
+            raise ValueError(
+                f"Invalid version format: {label} version must be a string in "
+                f"major.minor.patch format, got {type(version).__name__}."
+            )
+        parts = version.split(".")
+        if len(parts) != 3:
+            raise ValueError("Invalid version format. Expected major.minor.patch.")
+        try:
+            return tuple(int(part) for part in parts)
+        except ValueError:
+            raise ValueError("Invalid version format. Expected major.minor.patch.")
 
-        if config_major > app_major:
+    try:
+        config_major, config_minor, config_patch = parse_version(config_version, "Configuration")
+        app_major, app_minor, app_patch = parse_version(app_version, "Application")
+
+        # Compatibility rule: the major versions must be equal, and the
+        # configuration version must not be newer than the application
+        # version in its minor or patch component. Any older configuration
+        # within the same major version is accepted, with no lower limit.
+        if config_major != app_major:
             raise VersionIncompatibilityError(
-                f"Configuration version {config_version} is not compatible with application version {app_version} (Major version mismatch)."
+                f"Configuration version {config_version} is not compatible with application version {app_version} (Major version mismatch: major versions must be equal)."
             )
-        elif config_major == app_major and config_minor > app_minor:
-             raise VersionIncompatibilityError(
-                f"Configuration version {config_version} is not compatible with application version {app_version} (Minor version mismatch)."
+        if (config_minor, config_patch) > (app_minor, app_patch):
+            raise VersionIncompatibilityError(
+                f"Configuration version {config_version} is not compatible with application version {app_version} (Configuration version is newer than the application version in its minor or patch component)."
             )
-        
+
         logging.info(f"Configuration version {config_version} is compatible with application version {app_version}.")
         return True
-    except ValueError:
-        logging.error("Invalid version format. Expected major.minor.patch.")
+    except ValueError as e:
+        logging.error(str(e))
         raise
     except VersionIncompatibilityError as e:
         logging.warning(e)
@@ -156,10 +177,26 @@ def main() -> None:
 
     try:
         config_data = load_config(args.config_file, args.config_type)
+
+        if not isinstance(config_data, dict):
+            logging.error(
+                f"Invalid config format: the top-level document in '{args.config_file}' "
+                f"must be a mapping of keys to values, got {type(config_data).__name__}."
+            )
+            sys.exit(1)
+
         config_version = config_data.get(args.version_key)
 
-        if not config_version:
+        if config_version is None or config_version == "":
             logging.error(f"Version key '{args.version_key}' not found in configuration file.")
+            sys.exit(1)
+
+        if not isinstance(config_version, str):
+            logging.error(
+                f"Invalid version format: the value of version key '{args.version_key}' "
+                f"must be a string in major.minor.patch format, got {type(config_version).__name__}. "
+                "Quote the version in the configuration file if needed."
+            )
             sys.exit(1)
 
         is_version_compatible(config_version, args.app_version)
