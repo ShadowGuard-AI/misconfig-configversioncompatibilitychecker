@@ -134,6 +134,11 @@ def is_version_compatible(config_version: str, app_version: str) -> bool:
         if len(parts) != 3:
             raise ValueError("Invalid version format. Expected major.minor.patch.")
         try:
+            # int() is more forgiving than the format I claim to enforce:
+            # it accepts a leading plus, surrounding spaces, underscores
+            # between digits, and negative numbers, so 1.-2.3 and 1. 2.3
+            # both parse here as versions. What I actually require is
+            # three dot separated pieces that int() will swallow.
             return tuple(int(part) for part in parts)
         except ValueError:
             raise ValueError("Invalid version format. Expected major.minor.patch.")
@@ -150,6 +155,11 @@ def is_version_compatible(config_version: str, app_version: str) -> bool:
             raise VersionIncompatibilityError(
                 f"Configuration version {config_version} is not compatible with application version {app_version} (Major version mismatch: major versions must be equal)."
             )
+        # Within a major version there is no floor. A configuration
+        # written for the very first release of a major line is
+        # accepted against the last release of that line, however
+        # much the format grew in between, because only being newer
+        # than the application is treated as a hazard.
         if (config_minor, config_patch) > (app_minor, app_patch):
             raise VersionIncompatibilityError(
                 f"Configuration version {config_version} is not compatible with application version {app_version} (Configuration version is newer than the application version in its minor or patch component)."
@@ -161,6 +171,11 @@ def is_version_compatible(config_version: str, app_version: str) -> bool:
         logging.error(str(e))
         raise
     except VersionIncompatibilityError as e:
+        # This function never returns False, despite its name and
+        # its docstring. Incompatibility travels as this exception,
+        # and main is written around that; a library caller testing
+        # the return value of a compatible looking call gets an
+        # exception for the incompatible case instead.
         logging.warning(e)
         raise
 
@@ -185,12 +200,22 @@ def main() -> None:
             )
             sys.exit(1)
 
+        # The key is looked up at the top level only, under its exact
+        # name. A version nested in a metadata section, where plenty
+        # of formats keep it, reads as missing here, and a dotted key
+        # name is a literal name to me, not a path.
         config_version = config_data.get(args.version_key)
 
         if config_version is None or config_version == "":
             logging.error(f"Version key '{args.version_key}' not found in configuration file.")
             sys.exit(1)
 
+        # YAML makes this branch common: an unquoted version with
+        # two components, 1.2, parses as a float, and even a three
+        # part version can arrive as a number if it was written with
+        # a trailing zero the parser folded away. The hint about
+        # quoting is the whole remedy, and it is buried in this log
+        # line rather than in the help text.
         if not isinstance(config_version, str):
             logging.error(
                 f"Invalid version format: the value of version key '{args.version_key}' "
